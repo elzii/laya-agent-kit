@@ -1,7 +1,0 @@
-# Merge this entry into ~/.codex/config.toml; do not replace your existing file.
-[mcp_servers.laya-agent-kit]
-command = "/ABSOLUTE/PATH/TO/laya-agent-kit/.venv/bin/python"
-args = ["-m", "laya_agent.server"]
-
-[mcp_servers.laya-agent-kit.env]
-LAYA_BASE_URL = "http://127.0.0.1:8000"

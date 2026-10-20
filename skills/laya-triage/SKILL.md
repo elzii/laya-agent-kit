@@ -1,18 +1,12 @@
 ---
 name: laya-triage
-description: Use Laya to prioritize compound coding requests and audit an implementation plan before acting.
+description: Triage compound coding requests and audit implementation plans.
 ---
 
-# Laya triage
+# Laya task triage and planning
 
-Use this skill when the request contains multiple independent changes, an unclear first blocker, or a plan with several steps.
-
-1. Preserve every explicit user requirement. Laya's classification is advisory and must not erase a requirement.
-2. Call `triage_user_goals` with the complete user request when it is compound or ordering is unclear.
-3. Draft a concise, ordered plan with observable outcomes and dependencies.
-4. For a multi-step or risky plan, call `audit_plan_requirements` with the original request and the proposed steps.
-5. If the audit is `indeterminate`, unavailable, or malformed, review the plan manually. Never treat an error as approval.
-6. Ask for confirmation before destructive, irreversible, external, or security-sensitive actions when confirmation is warranted.
-7. Work on the highest-priority blocker first, then return to remaining requirements.
-
-Do not call Laya for trivial single-step requests where it adds no value.
+1. For a request with multiple distinct objectives, call `triage_user_goals` before broad discovery. Identify dependencies and the primary blocker; handle related goals in a deliberate order rather than starting every workstream at once.
+2. Before a multi-step implementation, call `audit_plan_requirements` with the original user request and explicit planned steps. Check that each requirement is represented in the plan.
+3. Treat unavailable, fallback, malformed, or ambiguous output as **indeterminate**, not approval. A score is decision support, not a substitute for reading the requirements or exercising judgment.
+4. Prefer the smallest plan that satisfies the request. Preserve explicit constraints, acceptance criteria, and requested deliverables; do not silently drop secondary requirements.
+5. When the host supports a user-visible plan artifact, use that host's native mechanism. Do not assume another harness's artifact directory, `write_to_file` API, metadata, or `file://` link conventions.

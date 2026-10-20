@@ -1,38 +1,28 @@
-"""Shared policy defaults and safe response helpers for Laya integrations."""
-from __future__ import annotations
-import json
-import math
-from typing import Any
+import os
+from dataclasses import dataclass
 
-DEFAULT_FILE_THRESHOLD = 0.60
-DEFAULT_REGION_THRESHOLD = 0.65
-DEFAULT_DISTILL_THRESHOLD = 0.55
-DEFAULT_DOC_THRESHOLD = 0.60
-DEFAULT_HYPOTHESIS_THRESHOLD = 0.65
-DEFAULT_MAX_REGIONS = 8
-DEFAULT_MAX_DISTILLED_LINES = 12
-DEFAULT_MAX_STATE_CHARS = 12_000
-DEFAULT_MAX_BATCH_ITEMS = 128
+@dataclass(frozen=True)
+class Policy:
+    max_output_chars: int = 12000
+    max_regions: int = 8
+    max_candidate_files: int = 30
+    file_read_warning_lines: int = 50
 
+    @classmethod
+    def from_env(cls):
+        return cls(
+            max_output_chars=max(100, int(os.getenv("LAYA_MAX_OUTPUT_CHARS", "12000"))),
+            max_regions=max(1, int(os.getenv("LAYA_MAX_REGIONS", "8"))),
+            max_candidate_files=max(1, int(os.getenv("LAYA_MAX_CANDIDATE_FILES", "30"))),
+            file_read_warning_lines=max(1, int(os.getenv("LAYA_FILE_READ_WARNING_LINES", "50"))),
+        )
 
-def json_text(data: Any) -> str:
-    return json.dumps(data, indent=2, ensure_ascii=False, default=str)
+def cap_text(value, limit=12000):
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= limit:
+        return text
+    suffix = f"\n[truncated; {len(text)-limit} characters omitted]"
+    return text[:max(0, limit-len(suffix))] + suffix
 
-
-def finite_score(response: Any, key: str) -> float | None:
-    """Extract a valid [0,1] score from the official server's known response shape."""
-    try:
-        score = float(response["answers"][key]["noul"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return score if math.isfinite(score) and 0 <= score <= 1 else None
-
-
-def indeterminate(tool: str, error: Exception) -> str:
-    """Never convert a service or schema failure into a successful decision."""
-    return json_text({
-        "status": "indeterminate",
-        "tool": tool,
-        "error": f"{type(error).__name__}: {error}",
-        "fallback_required": True,
-    })
+def verification_status(passed):
+    return "passed" if passed is True else "failed" if passed is False else "indeterminate"

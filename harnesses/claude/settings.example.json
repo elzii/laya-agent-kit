@@ -1,9 +1,8 @@
 {
   "mcpServers": {
     "laya-agent-kit": {
-      "command": "/ABSOLUTE/PATH/TO/laya-agent-kit/.venv/bin/python",
-      "args": ["-m", "laya_agent.server"],
-      "env": { "LAYA_BASE_URL": "http://127.0.0.1:8000" }
+      "command": "/ABSOLUTE/PATH/TO/laya-agent-kit/.venv/bin/laya-agent-mcp",
+      "env": {"LAYA_BASE_URL": "http://127.0.0.1:8000"}
     }
   }
 }

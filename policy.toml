@@ -1,0 +1,18 @@
+[retrieval]
+max_candidate_files = 30
+max_regions = 8
+file_read_warning_lines = 50
+
+[distillation]
+max_output_chars = 12000
+long_output_line_threshold = 12
+
+[verification]
+require_diff_review = true
+require_tests_when_available = true
+unavailable_is_indeterminate = true
+
+[failure]
+retrieval = "fallback_to_local_tools"
+verification = "indeterminate"
+plan_audit = "indeterminate"

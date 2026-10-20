@@ -10,7 +10,7 @@ A multi-harness integration layer for coding agents that use the **official Laya
 - 🐧 Linux: Use [systemd](https://www.freedesktop.org/wiki/Software/systemd/) to autostart Laya server. [GoogleAI Instructions - Linux](https://www.google.com/search?udm=50&aep=11&q=How+to+create+a+custom+user+systemd+daemon)
 - 🖥️ macOS: Create a [Launch Agents](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) to autostart Laya server. [GoogleAI Instructions - macOS](https://www.google.com/search?udm=50&aep=11&q=How+to+create+a+custom+launch+agent+on+macos)
 
-_The below assumes you on  macOS and have **python3 >= 3.10** installed via **homebrew**:_
+_The below assumes you on  macOS and have **python3 >= 3.11** installed via **homebrew**:_
 
 `$HOME/Library/LaunchAgents/com.laya.server.plist`
 
@@ -60,63 +60,91 @@ launchctl kickstart -k gui/$(id -u)/com.laya.server
 ```
 
 
-
-
 ## Architecture
 
 - `src/laya_agent/server.py`: MCP bridge and tool implementations. It preserves the current `/v1/systemone` and `/v1/systemone/batch` request shape and existing tool names.
+- `src/laya_agent/engine.py`: Where the inference functions are implemented. `server.py` calls `engine.py` to perform the actual inference. This separation allows for easier testing and development of the inference logic without needing to run the server.
+- `src/laya_agent/client.py`: Thin client for harnesses to call the MCP bridge. It handles requests and errors, and is essentially the same as server, but leaves it so server.py is a very client readable overview.
 - `skills/`: portable, on-demand workflows for triage, retrieval, debugging, and verification.
 - `harnesses/`: harness-specific instruction and configuration examples. Review and merge these into your own harness config; don't blindly overwrite existing settings.
 - `adapters/`: install/doctor/uninstall helper.
 - `tests/`: local policy and smoke tests.
 
-Your existing server startup remains separate:
 
+## Run `laya-serve` Manually
 ```bash
 export LAYA_DEVICE=mps
 export LAYA_PRELOAD=1
 laya-serve --host 127.0.0.1 --port 8000
 ```
 
-The MCP bridge defaults to `LAYA_BASE_URL=http://127.0.0.1:8000`. Set `LAYA_BASE_URL` on the MCP process if the official server is elsewhere. `LAYA_DEVICE` and `LAYA_PRELOAD` belong to the inference-server process, not each agent harness.
+
+The MCP bridge defaults to `http://127.0.0.1:8000` and speaks the official API shape used by the attached MCP: single inference `{"state": "...", "questions": {...}}` at `/v1/systemone`, and batch inference `{"states": ["..."], "questions": {...}}` at `/v1/systemone/batch`. Batch calls are chunked to 48 states (configurable, capped at 64) and individual states are capped at 45,000 characters. A reachability check alone does not prove inference compatibility; run a real tool test after setup.
+
+## Install dependencies
+
+On macOS with Homebrew:
+
+```bash
+./scripts/install-deps.sh
+```
+
+This installs `ripgrep` (`rg`) and `fd` with `brew install ripgrep fd`. Debian/Ubuntu installs `ripgrep` and `fd-find` and adds a `fd` alias under `~/.local/bin` when necessary. Other Linux package managers are handled where possible. You can also install them manually.
+
+For a combined OS-dependency and Python setup, run `./scripts/setup.sh`. Or install the Python package manually in an isolated environment:
+
 
 ## Development install
 
 From this directory:
 
 ```bash
-python3 -m venv .venv        # OPTIONAL
-source .venv/bin/activate    # OPTIONAL
-python -m pip install -e .   # install this repo as a package
-command -v rg                # fast_symbol_search uses ripgrep
-laya-agent-kit doctor        # tests, lint, and verify the bridge
+python3 -m venv .venv                    # OPTIONAL
+source .venv/bin/activate                # OPTIONAL
+python -m pip install -e .               # install this repo as a package
+export LAYA_BASE=http://127.0.0.1:8000   # host and port settings (defaults)
+command -v rg                            # fast_symbol_search uses ripgrep
+laya-agent-kit doctor                    # tests, lint, and verify the bridge
 ```
 
-Configure a harness to launch the MCP bridge with the same Python environment, for example:
 
-```json
-{
-  "command": "/absolute/path/to/laya-agent-kit/.venv/bin/python",
-  "args": ["-m", "laya_agent.server"],
-  "env": { "LAYA_BASE_URL": "http://127.0.0.1:8000" }
-}
-```
+## MCP configuration
 
-Run the bridge manually for a quick import check:
+Point each harness at the absolute path to `.venv/bin/laya-agent-mcp`, with `LAYA_BASE=http://127.0.0.1:8000`. Example configuration files are under `harnesses/`. Keep the official Laya server running separately using your own script.
+
+## Multi-harness skills and instructions
+
+The shared `skills/laya-system1-gating/SKILL.md` contains the cross-harness version of the phased token-optimization protocol. Four focused skills cover triage, context retrieval, debugging, and verification. These skills retain operational details and recovery rules; the shared protocol coordinates them rather than replacing their domain-specific guidance. Harness-specific instruction files refer to the shared protocol without assuming every harness has the same planning-artifact or hook APIs.
+
+Preview or install skills/instructions:
 
 ```bash
-python -m laya_agent.server
+laya-agent-kit install --harness gemini --dry-run
+laya-agent-kit install --harness gemini
+laya-agent-kit install --harness claude
+laya-agent-kit install --harness codex
+laya-agent-kit install --harness opencode
 ```
 
-## Tool safety semantics
+The installer copies skills into each harness's user-level skills directory and adds a marked managed section to the relevant instruction file. Existing instruction text is preserved, and a timestamped backup is made before changes. Review the changes after installation.
 
-- Retrieval filtering is an optimization, not a security boundary. If Laya cannot score candidate paths, the tool keeps the candidates rather than silently discarding them.
-- Model-based triage, plan audits, and hypothesis checks are advisory.
-- A service error is **not** a successful verification. Verification results use explicit status fields.
-- `verify_patch_state` checks the expected snippet, optional absent text, optional pre-edit hash, and Python/JSON syntax. It does not replace tests, type checks, or diff review.
-- `laya_status` probes the official server's `/health` endpoint. If your official build exposes a different health endpoint, adjust that tool rather than assuming the endpoint exists.
+## Tools carried forward
 
-## Important integration note
+- `filter_candidate_files`
+- `fast_symbol_search`
+- `distill_command_output`
+- `locate_code_regions`
+- `verify_patch_state`
+- `triage_user_goals`
+- `laya_triage_error`
+- `verify_hypothesis`
+- `extract_doc_guidelines`
+- `audit_plan_requirements`
+- `laya_decide`
 
-The `server.py` bridge is intentionally kept as a single file in this initial scaffold so the tool contract stays easy to compare against the already syntax-checked implementation. `client.py`, `policy.py`, and `verification.py` are reusable extracted utilities for subsequent modularization; the current bridge does not yet import them. The first integration test should be against your actual official Laya server because endpoint schemas and response details are server-version dependent.
+Also included: `laya_status` and `laya_systemone_batch`.
+
+## Safety and honest verification
+
+Laya fallback/unavailable responses are not treated as positive judgments. If Laya is down, tools use a clearly marked fallback or return indeterminate rather than fabricating semantic scores. `verify_patch_state` checks expected snippet presence and selected syntax only; run tests, type checks, linters, and builds as appropriate. The 50-line and 12-line rules are workflow heuristics, not a reason to suppress evidence needed to solve a task safely. Semantic filtering produces a shortlist, not proof that excluded files are irrelevant; missing matches and unavailable tools must not be treated as negative evidence.
 
