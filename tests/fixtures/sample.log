@@ -1,0 +1,5 @@
+INFO starting service
+INFO loaded configuration
+WARN retrying request
+ERROR connection refused at 127.0.0.1:8000
+Traceback: request failed
