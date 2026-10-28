@@ -1,14 +1,39 @@
 """Shared local utilities and official Laya System-1 workflows."""
-import json, os, re, shutil, subprocess, tomllib
+import hashlib, json, os, re, shutil, subprocess, time, tomllib
 from pathlib import Path
 from .client import LayaClient
+from .policy import Policy
+from .cache import AnswerCache
+from .redaction import redact_secrets
+from .telemetry import TelemetryLedger
 
 class LayaEngine:
-    def __init__(self, client=None):
+    def __init__(self, client=None, policy=None, cache=None, telemetry=None):
         self.client = client or LayaClient()
+        self.policy = policy or Policy.load()
+        self.cache = cache or AnswerCache(enabled=self.policy.cache_enabled)
+        self.telemetry = telemetry or TelemetryLedger(enabled=self.policy.telemetry_enabled)
 
     async def decide(self, state, questions):
-        return await self.client.systemone(state, questions)
+        t0 = time.perf_counter()
+        clean_state = state
+        if self.policy.redaction_enabled and isinstance(state, str):
+            clean_state, _ = redact_secrets(state)
+
+        # Check answer cache
+        cached = self.cache.get(clean_state, questions)
+        if cached is not None:
+            duration_ms = (time.perf_counter() - t0) * 1000.0
+            self.telemetry.record_call(tool="decide", input_tokens_est=len(str(clean_state)) // 4, output_tokens_est=len(str(cached)) // 4, duration_ms=duration_ms, cache_hit=True)
+            return cached
+
+        res = await self.client.systemone(clean_state, questions)
+        duration_ms = (time.perf_counter() - t0) * 1000.0
+        self.telemetry.record_call(tool="decide", input_tokens_est=len(str(clean_state)) // 4, output_tokens_est=len(str(res)) // 4, duration_ms=duration_ms, cache_hit=False)
+
+        if isinstance(res, dict) and not res.get("fallback"):
+            self.cache.set(clean_state, questions, res)
+        return res
 
     async def triage_user_goals(self, prompt):
         questions = {
@@ -111,67 +136,146 @@ class LayaEngine:
             if p.is_file() and not any(x in excluded for x in rel.parts): result.append(str(p))
         return result
 
-    async def distill_command_output(self, goal, raw_output, threshold=.55):
-        lines=[line.strip() for line in raw_output.splitlines() if line.strip()]
-        if len(lines)<=12: return raw_output
-        res=await self.client.batch(lines,{"relevant":{"type":"noul","instructions":f"Does this diagnostic/log line provide evidence for: '{goal[:1000]}'?"}})
-        if isinstance(res,dict) and res.get("fallback"):
-            return {"fallback":True,"error":res.get("error"),"message":"Laya distillation unavailable; raw output intentionally not echoed. Use local targeted inspection."}
-        kept=[line for line,item in zip(lines,res) if item.get("answers",{}).get("relevant",{}).get("noul",0)>=threshold]
-        if not kept: return "\n".join(lines[:6]+["[...omitted by distillation: no lines passed threshold...]"]+lines[-6:])
-        return f"--- Distilled Output ({len(kept)}/{len(lines)} lines kept) ---\n"+"\n".join(kept)
+    async def distill_command_output(self, goal, raw_output, threshold=.55, spool_dir=None):
+        raw_lines = raw_output.splitlines()
+        lines = [line.strip() for line in raw_lines if line.strip()]
+        if len(lines) <= 12:
+            return raw_output
+
+        # Spool raw output to local disk so full evidence is always accessible
+        try:
+            spool_path = Path(spool_dir or os.getenv("LAYA_SPOOL_DIR", ".laya/spool")).expanduser()
+            spool_path.mkdir(parents=True, exist_ok=True)
+            content_hash = hashlib.sha256(raw_output.encode("utf-8")).hexdigest()[:16]
+            spool_file = spool_path / f"{content_hash}.log"
+            if not spool_file.exists():
+                spool_file.write_text(raw_output, encoding="utf-8")
+            spool_ref = str(spool_file)
+        except Exception:
+            spool_ref = "spool_unavailable"
+
+        # Chunk lines into semantic blocks (15 lines per chunk) to protect multi-line stack traces
+        chunk_size = 15
+        chunks = []
+        chunk_lines_map = []
+        for i in range(0, len(lines), chunk_size):
+            block = lines[i:i + chunk_size]
+            chunks.append("\n".join(block))
+            chunk_lines_map.append(block)
+
+        res = await self.client.batch(chunks, {"relevant": {"type": "noul", "instructions": f"Does this diagnostic/log block contain errors, tracebacks, or evidence for: '{goal[:1000]}'?"}})
+        if isinstance(res, dict) and res.get("fallback"):
+            return {"fallback": True, "error": res.get("error"), "spool_file": spool_ref, "message": f"Laya distillation unavailable; raw output saved to {spool_ref}. Use local targeted inspection."}
+
+        kept = []
+        for block, item in zip(chunk_lines_map, res):
+            score = item.get("answers", {}).get("relevant", {}).get("noul", 0)
+            if score >= threshold:
+                kept.extend(block)
+
+        if not kept:
+            return f"--- Distilled Output (0/{len(lines)} lines matched threshold; raw output in {spool_ref}) ---\n" + "\n".join(lines[:6] + ["[...omitted by distillation: no lines passed threshold...]"] + lines[-6:])
+
+        # Deduplicate while preserving line order
+        unique_kept = list(dict.fromkeys(kept))
+        return f"--- Distilled Output ({len(unique_kept)}/{len(lines)} lines kept; full raw output in {spool_ref}) ---\n" + "\n".join(unique_kept)
 
     async def locate_code_regions(self, file_path="", task="", path="", goal="", chunk_size=40, threshold=.65):
-        name=(file_path or path).strip(); query=(task or goal).strip()
-        if not name or not query: return {"status":"error","error":"file path and task are required"}
-        p=Path(name).expanduser().resolve()
-        if not p.is_file(): return {"status":"error","error":f"File not found: {name}"}
-        lines=p.read_text(errors="replace").splitlines()
-        if len(lines)<=chunk_size: return {"status":"short_file","line_count":len(lines),"content":"\n".join(f"{i+1}: {v}" for i,v in enumerate(lines))}
-        step=max(chunk_size//2,10); chunks=[]; meta=[]
-        for start in range(0,len(lines),step):
-            end=min(start+chunk_size,len(lines)); chunks.append("\n".join(lines[start:end])); meta.append((start,end))
-            if end>=len(lines): break
-        results=await self.client.batch(chunks,{"target_match":{"type":"noul","instructions":f"Does this code block contain logic, styling, or config for: '{query[:1000]}'?"}},timeout=30)
-        if isinstance(results,dict) and results.get("fallback"):
-            return {"status":"unavailable","fallback":True,"error":results.get("error"),"file":name}
-        ranked=sorted(((it.get("answers",{}).get("target_match",{}).get("noul",0),i) for i,it in enumerate(results)),reverse=True)
-        chosen=[(s,i) for s,i in ranked if s>=threshold]
-        if not chosen and ranked and ranked[0][0]>=.40: chosen=ranked[:1]
-        regions=[]
-        for score,i in sorted(chosen[:8],key=lambda x:meta[x[1]][0]):
-            start,end=meta[i]; a=max(0,start-3); b=min(len(lines),end+3)
-            regions.append({"start_line":start+1,"end_line":end,"confidence":score,
-                "context_before":"\n".join(f"{j+1}: {lines[j]}" for j in range(a,start)),
-                "target":"\n".join(f"{j+1}: {lines[j]}" for j in range(start,end)),
-                "context_after":"\n".join(f"{j+1}: {lines[j]}" for j in range(end,b))})
-        return {"status":"ok" if regions else "no_match","file":name,"line_count":len(lines),"regions":regions}
+        name = (file_path or path).strip()
+        query = (task or goal).strip()
+        if not name or not query:
+            return {"status": "error", "error": "file path and task are required"}
+        p = Path(name).expanduser().resolve()
+        if not p.is_file():
+            return {"status": "error", "error": f"File not found: {name}"}
+        lines = p.read_text(errors="replace").splitlines()
+        if len(lines) <= chunk_size:
+            return {"status": "short_file", "line_count": len(lines), "content": "\n".join(f"{i+1}: {v}" for i, v in enumerate(lines))}
+
+        step = max(chunk_size // 2, 10)
+        chunks = []
+        meta = []
+        for start in range(0, len(lines), step):
+            end = min(start + chunk_size, len(lines))
+            chunks.append("\n".join(lines[start:end]))
+            meta.append((start, end))
+            if end >= len(lines):
+                break
+
+        results = await self.client.batch(chunks, {"target_match": {"type": "noul", "instructions": f"Does this code block contain logic, styling, or config for: '{query[:1000]}'?"}}, timeout=30)
+        if isinstance(results, dict) and results.get("fallback"):
+            return {"status": "unavailable", "fallback": True, "error": results.get("error"), "file": name}
+
+        ranked = sorted(((it.get("answers", {}).get("target_match", {}).get("noul", 0), i) for i, it in enumerate(results)), reverse=True)
+        chosen = [(s, i) for s, i in ranked if s >= threshold]
+        if not chosen and ranked and ranked[0][0] >= .40:
+            chosen = ranked[:1]
+
+        # Merge contiguous and overlapping ranges to eliminate duplicate token inflation
+        sorted_intervals = sorted([(*meta[i], score) for score, i in chosen[:8]], key=lambda x: x[0])
+        merged_spans = []
+        for start, end, score in sorted_intervals:
+            if not merged_spans or start > merged_spans[-1]["end"] + 4:
+                merged_spans.append({"start": start, "end": end, "score": score})
+            else:
+                merged_spans[-1]["end"] = max(merged_spans[-1]["end"], end)
+                merged_spans[-1]["score"] = max(merged_spans[-1]["score"], score)
+
+        regions = []
+        for span in merged_spans:
+            start = span["start"]
+            end = span["end"]
+            score = span["score"]
+            a = max(0, start - 3)
+            b = min(len(lines), end + 3)
+            regions.append({
+                "start_line": start + 1,
+                "end_line": end,
+                "confidence": score,
+                "context_before": "\n".join(f"{j+1}: {lines[j]}" for j in range(a, start)),
+                "target": "\n".join(f"{j+1}: {lines[j]}" for j in range(start, end)),
+                "context_after": "\n".join(f"{j+1}: {lines[j]}" for j in range(end, b)),
+            })
+        return {"status": "ok" if regions else "no_match", "file": name, "line_count": len(lines), "regions": regions}
 
     async def verify_patch_state(self, file_path, expected_snippet, check_syntax=True):
-        p=Path(file_path).expanduser().resolve()
-        if not p.is_file(): return {"verified":False,"status":"failed","error":f"File not found: {file_path}"}
-        content=p.read_text(errors="replace")
-        if expected_snippet.strip() not in content: return {"verified":False,"status":"failed","error":"Expected snippet not found"}
-        syntax="untested"
+        p = Path(file_path).expanduser().resolve()
+        if not p.is_file():
+            return {"verified": False, "status": "failed", "error": f"File not found: {file_path}"}
+        content = p.read_text(errors="replace")
+        if expected_snippet.strip() not in content:
+            return {"verified": False, "status": "failed", "error": "Expected snippet not found"}
+        syntax = "untested"
         if check_syntax:
-            ext=p.suffix.lower()
+            ext = p.suffix.lower()
             try:
-                if ext==".py":
-                    import py_compile; py_compile.compile(str(p),doraise=True); syntax="valid_python"
-                elif ext==".json": json.loads(content); syntax="valid_json"
-                elif ext in (".sh",".bash"):
-                    b=shutil.which("bash")
+                if ext == ".py":
+                    # In-memory compile without generating __pycache__ or .pyc side-effect
+                    compile(content, str(p), "exec")
+                    syntax = "valid_python"
+                elif ext == ".json":
+                    json.loads(content)
+                    syntax = "valid_json"
+                elif ext in (".sh", ".bash"):
+                    b = shutil.which("bash")
                     if b:
-                        cp=subprocess.run([b,"-n",str(p)],capture_output=True,text=True)
-                        if cp.returncode: return {"verified":False,"status":"failed","syntax_error":cp.stderr}
-                        syntax="valid_bash"
-                elif ext==".toml": tomllib.loads(content); syntax="valid_toml"
-                elif ext in (".yaml",".yml"):
+                        cp = subprocess.run([b, "-n", str(p)], capture_output=True, text=True)
+                        if cp.returncode:
+                            return {"verified": False, "status": "failed", "syntax_error": cp.stderr}
+                        syntax = "valid_bash"
+                elif ext == ".toml":
+                    tomllib.loads(content)
+                    syntax = "valid_toml"
+                elif ext in (".yaml", ".yml"):
                     try:
-                        import yaml; yaml.safe_load(content); syntax="valid_yaml"
-                    except ImportError: syntax="yaml_checker_missing"
-            except Exception as exc: return {"verified":False,"status":"failed","syntax_error":str(exc)}
-        return {"verified":True,"status":"snippet_present","syntax":syntax,"note":"Presence and syntax checks do not establish behavioral correctness."}
+                        import yaml
+                        yaml.safe_load(content)
+                        syntax = "valid_yaml"
+                    except ImportError:
+                        syntax = "yaml_checker_missing"
+            except Exception as exc:
+                return {"verified": False, "status": "failed", "syntax_error": str(exc)}
+        return {"verified": True, "status": "snippet_present", "syntax": syntax, "note": "Presence and syntax checks do not establish behavioral correctness."}
 
     async def extract_doc_guidelines(self, doc_path="", focus_topic="", topic="", task="", query="", file_path="", path="", threshold=.55, max_sections=2, max_chars=6000):
         name=(doc_path or file_path or path).strip(); focus=(focus_topic or topic or task or query).strip()

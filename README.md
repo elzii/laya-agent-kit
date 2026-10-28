@@ -113,16 +113,16 @@ source .venv/bin/activate                # OPTIONAL
 python -m pip install -e .               # install this repo as a package
 export LAYA_BASE=http://127.0.0.1:8000   # host and port settings (defaults)
 command -v rg                            # fast_symbol_search uses ripgrep
-laya-agent-kit doctor                    # tests, lint, and verify the bridge
+laya-agent-kit doctor                    # checks dependencies and Laya server reachability
 ```
 
 ### Running Tests
 ```bash
-# Run isolated adapter or harness tests
-pytest tests/test_systemone.py -v -x
+# Run unit tests
+python3 -m pytest -q -p no:cacheprovider
 
-# Run with stdout printing enabled
-pytest -v -s tests/
+# Run with verbose output
+python3 -m pytest -v tests/
 ```
 
 

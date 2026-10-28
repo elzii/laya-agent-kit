@@ -16,3 +16,8 @@ unavailable_is_indeterminate = true
 retrieval = "fallback_to_local_tools"
 verification = "indeterminate"
 plan_audit = "indeterminate"
+
+[optimizations]
+cache_enabled = false
+redaction_enabled = true
+telemetry_enabled = false
