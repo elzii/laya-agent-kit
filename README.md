@@ -6,7 +6,8 @@ A multi-harness integration layer for coding agents that use the **official Laya
 [!IMPORTANT]
 > **Pre-requisites**:
 - Install [Laya](https://github.com/NandhaKishorM/laya) globally with `python3 -m pip install laya`
- 
+
+- 🟦 Windows: Use [Supervisor](http://supervisord.org/) to autostart Laya server. [GoogleAI Instructions - Windows](https://www.google.com/search?udm=50&aep=11&q=How+to+install+supervisor+on+windows+and+autostart+a+python+script+on+login)
 - 🐧 Linux: Use [systemd](https://www.freedesktop.org/wiki/Software/systemd/) to autostart Laya server. [GoogleAI Instructions - Linux](https://www.google.com/search?udm=50&aep=11&q=How+to+create+a+custom+user+systemd+daemon)
 - 🖥️ macOS: Create a [Launch Agents](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) to autostart Laya server. [GoogleAI Instructions - macOS](https://www.google.com/search?udm=50&aep=11&q=How+to+create+a+custom+launch+agent+on+macos)
 
@@ -29,6 +30,8 @@ _The below assumes you on  macOS and have **python3 >= 3.11** installed via *
         <string>--port</string>
         <string>8000</string>
     </array>
+    <key>WorkingDirectory</key>
+    <string>/tmp</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -36,6 +39,8 @@ _The below assumes you on  macOS and have **python3 >= 3.11** installed via *
         <key>LAYA_DEVICE</key>
         <string>mps</string>
         <key>LAYA_PRELOAD</key>
+        <string>1</string>
+        <key>PYTHONUNBUFFERED</key>
         <string>1</string>
     </dict>
     <key>RunAtLoad</key>
@@ -55,6 +60,10 @@ _The below assumes you on  macOS and have **python3 >= 3.11** installed via *
 
 - Bootstrap it and start it with:
 ```bash
+# Unregister previous service instance
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.laya.server.plist 2>/dev/null || true
+
+# Load and kickstart the updated service
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.laya.server.plist
 launchctl kickstart -k gui/$(id -u)/com.laya.server
 ```
@@ -105,6 +114,15 @@ python -m pip install -e .               # install this repo as a package
 export LAYA_BASE=http://127.0.0.1:8000   # host and port settings (defaults)
 command -v rg                            # fast_symbol_search uses ripgrep
 laya-agent-kit doctor                    # tests, lint, and verify the bridge
+```
+
+### Running Tests
+```bash
+# Run isolated adapter or harness tests
+pytest tests/test_systemone.py -v -x
+
+# Run with stdout printing enabled
+pytest -v -s tests/
 ```
 
 
