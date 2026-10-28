@@ -24,8 +24,9 @@ Use this as the shared workflow when the official Laya MCP tools are available. 
 - After editing, use `verify_patch_state(file_path, expected_snippet, check_syntax=true)` to confirm snippet presence and supported syntax instead of rereading a long file solely to see whether the edit landed.
 - This is a narrow check, not proof of behavior. Run relevant tests, type checks, linters, builds, or focused integration checks when appropriate. Report what was and was not run.
 
-## Phase 4 — Diagnostic distillation
-- When command, test, compiler, server, browser-evaluation, DOM, or style output exceeds 12 lines, use `distill_command_output(goal, raw_output)` before feeding the output into further reasoning.
+## Phase 4 — Diagnostic distillation & ad-hoc execution
+- **Ad-hoc scripts & smoke checks**: Use inline commands (e.g. `python3 -c "..."`) for single-turn checks under ~20 lines (< 750 characters) to avoid multi-turn tool-call overhead. For complex scripts over 20 lines, scripts with intricate quote escaping, or iterative tasks, write to a scratch file (in the host's scratch/artifact directory) before running.
+- **Output distillation**: When command, test, compiler, server, browser-evaluation, DOM, or style output exceeds 12 lines, use `distill_command_output(goal, raw_output)` before feeding the output into further reasoning.
 - Preserve raw logs locally if needed. A distilled result is a working summary, not a replacement for evidence needed to diagnose a disputed or unexplained failure.
 
 ## Phase 5 — Error and hypothesis handling

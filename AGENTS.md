@@ -48,8 +48,12 @@ python3 -m laya_agent.install install --harness all
    - Diagnostic distillation (`distill_command_output`) must never drop stack trace context or discard raw outputs entirely. Full raw outputs must be spooled to local disk storage (`.laya/spool/`) so agents can inspect the full log if needed.
 4. **Zero Overlap in Code Retrieval**:
    - `locate_code_regions` must return merged, non-overlapping contiguous ranges to prevent duplicate token inflation.
+   - > [!CAUTION]
+     > **Under Evaluation for Potential Removal (High-Risk, High-Reward)**: `locate_code_regions` is under active review for potential deprecation or removal. While retrieving partial code chunks provides high token savings on large files, partial extraction carries significant risk of context truncation—omitting critical callers, error branches, or surrounding class state—which can lead to agent hallucinations or incomplete reasoning. Whole-file reads paired with targeted symbol lookup (`fast_symbol_search`) may ultimately prove safer.
 5. **No File Left Behind**:
    - Local syntax verification must not emit compilation artifacts (e.g. `__pycache__/*.pyc`) into user repositories.
+6. **Command Execution & Scratch Scripting**:
+   - For ad-hoc diagnostic scripts, use inline execution for quick checks (< 20 lines / < 750 chars) to avoid multi-turn tool overhead; use scratch scripts for large (> 20 lines) or iterative tasks. Always distill command output over 12 lines.
 
 ---
 
